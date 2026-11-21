@@ -1235,6 +1235,7 @@
   display: block;
   border-radius: 4px;
 }
+.postcard > button { pointer-events: auto; }
 .postcard__hint {
   padding: 6px 14px;
   font-size: 0.9rem;

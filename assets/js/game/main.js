@@ -128,6 +128,9 @@ function fillNames() {
 const CALM_SCREENS = new Set(['letter', 'memories', 'credits']);
 
 function go(name) {
+  $('#postcardLink').hidden = true;
+  $('#postcardHint').hidden = true;
+  $('#postcardClose').hidden = true;
   screen = name;
   stage.dataset.screen = name;
   $$('.screen').forEach((s) => (s.hidden = s.dataset.name !== name));
@@ -1002,6 +1005,7 @@ function bind() {
     if (!link.href) return;
     link.hidden = false;
     $('#postcardHint').hidden = false;
+    $('#postcardClose').hidden = false;
   });
   $('#btnPostcard').addEventListener('click', () => {
     sound.play('click');
@@ -1009,6 +1013,12 @@ function bind() {
     if (!link.href) return;
     link.hidden = false;
     $('#postcardHint').hidden = false;
+    $('#postcardClose').hidden = false;
+  });
+  $('#postcardClose').addEventListener('click', () => {
+    $('#postcardLink').hidden = true;
+    $('#postcardHint').hidden = true;
+    $('#postcardClose').hidden = true;
   });
   $('#btnMute').addEventListener('click', () => {
     const on = !(save.data.sound || save.data.music);
@@ -1076,7 +1086,11 @@ function frame(now) {
   if (screen === 'finale') {
     if (finale) {
       if (finale.done) showLetter();
-      else finale.draw(Math.min(dt, 0.05));
+      else {
+        // После изменения размеров холст сбрасывает преобразование, в том числе при прямом входе.
+        renderer.ctx.setTransform(renderer.k, 0, 0, renderer.k, 0, 0);
+        finale.draw(Math.min(dt, 0.05));
+      }
     }
     return;
   }
