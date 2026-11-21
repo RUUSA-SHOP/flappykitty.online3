@@ -62,6 +62,15 @@ export class Sim {
     this.finishX = null;
     this.deadT = 0;
 
+    // для эффектов: серия сердечек, «момент уровня», пролёты вплотную к воротам.
+    // На правила и на баланс не влияют — только сообщают наружу через events.
+    this.combo = 0;
+    this.comboT = 0;
+    this.bestCombo = 0;
+    this.momentDone = false;
+    this.lastGateSaid = false;
+    this.nearMisses = 0;
+
     const p = this.params();
     this.speed = p.speed;
     this.theme = p.theme;
@@ -279,6 +288,21 @@ export class Sim {
 
     // таймеры
     if (this.inv > 0) this.inv = Math.max(0, this.inv - dt);
+    if (this.comboT > 0) {
+      this.comboT -= dt;
+      if (this.comboT <= 0) this.combo = 0;
+    }
+
+    // «момент уровня»: короткая сцена у самого финиша (только в сюжете)
+    const mom = this.level && this.level.moment;
+    if (mom && !this.momentDone && this.progress >= mom.at) {
+      this.momentDone = true;
+      this.emit('moment', { kind: mom.kind, text: mom.text, progress: this.progress });
+    }
+    if (this.level && !this.lastGateSaid && this.passed === this.level.gates - 1) {
+      this.lastGateSaid = true;
+      this.emit('lastGate', { n: this.passed });
+    }
     for (const k of ['magnet', 'catnip']) {
       if (this[k] > 0) {
         this[k] -= dt;
@@ -310,6 +334,13 @@ export class Sim {
         g.passed = true;
         this.passed++;
         this.emit('gate', { n: this.passed });
+        // «вжух»: если проскочила совсем рядом с краем — искры и звук
+        const clear = Math.min(m.y - RADIUS - (g.gapY - g.gap / 2), g.gapY + g.gap / 2 - (m.y + RADIUS));
+        if (clear < 26) {
+          this.nearMisses++;
+          const edgeY = m.y < g.gapY ? g.gapY - g.gap / 2 : g.gapY + g.gap / 2;
+          this.emit('nearMiss', { x: g.x + g.w, y: edgeY, above: m.y < g.gapY, clear });
+        }
       }
       if (this.status !== 'playing') continue;
       if (wx + RADIUS < g.x || wx - RADIUS > g.x + g.w) continue;
@@ -432,7 +463,10 @@ export class Sim {
       case 'heart':
         this.hearts++;
         this.pathHearts++;
-        this.emit('heart', { x: it.x, y: it.y });
+        this.combo++;
+        this.comboT = 1.2;
+        if (this.combo > this.bestCombo) this.bestCombo = this.combo;
+        this.emit('heart', { x: it.x, y: it.y, combo: this.combo });
         break;
       case 'fish':
         this.hearts += 5;
@@ -462,6 +496,8 @@ export class Sim {
     }
     this.lives--;
     this.lostLives++;
+    this.combo = 0;
+    this.comboT = 0;
     if (this.lives > 0) {
       this.inv = 2;
       m.vy = -340;

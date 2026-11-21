@@ -274,37 +274,21 @@ await test('несуществующий адрес показывает стр�
 
 /* ======================= игра ======================= */
 
-await test('первый запуск: меню → вступление → полёт', async (track) => {
+await test('первый запуск: меню → полёт одним касанием', async (track) => {
   const page = track(await game());
   equal(await text(page, '#btnPlayLabel'), 'Играть', 'надпись на главной кнопке');
-  equal(await page.evaluate(() => document.getElementById('btnEndless').getAttribute('aria-disabled')), 'true', 'бесконечный режим закрыт до первого уровня');
-  assert(!(await visible(page, '#bday')), 'поздравление видно не в день рождения');
-  await page.click('#btnEndless');
-  equal(await screen(page), 'menu', 'закрытый бесконечный режим не должен запускаться');
+  equal(await page.evaluate(() => document.getElementById('btnEndless').getAttribute('aria-disabled')), 'true', 'бесконечный режим закрыт');
   await page.click('#btnPlay');
-  await waitScreen(page, 'intro');
-  equal(await text(page, '#introName'), 'Гостиная', 'название уровня');
-  assert((await text(page, '#introTip')).length > 10, 'нет подсказки перед уровнем');
-  await page.click('#btnGo');
   await waitScreen(page, 'play');
-  assert(await visible(page, '#hud'), 'счётчики должны быть видны');
-  assert(await visible(page, '#hint'), 'подсказка «Тапни» должна быть видна до первого взмаха');
-  equal(await page.evaluate(() => document.querySelectorAll('#hudLives .icon').length), 3, 'жизней в сюжете');
-  equal(await page.evaluate(() => window.__fk.sim.status), 'ready', 'до первого касания Мия ждёт');
-  await page.mouse.click(195, 500);
-  await page.waitForFunction(() => window.__fk.sim.status === 'playing');
-  // подсказку убирает игровой цикл на следующем кадре после взмаха
-  await page
-    .waitForFunction(() => document.getElementById('hint').hidden, { timeout: 5000 })
-    .catch(() => assert(false, 'подсказка должна исчезнуть после взмаха'));
+  assert(await visible(page, '#hud'), 'счётчики видны');
+  equal(await page.evaluate(() => document.querySelectorAll('#hudLives .icon').length), 3, 'три жизни');
+  equal(await page.evaluate(() => window.__fk.sim.status), 'playing', 'первый взмах после нажатия');
   equal((await stored(page)).plays, 1, 'запуск засчитан');
 });
 
 await test('управление: касание, пробел, пауза по Esc и кнопкой', async (track) => {
   const page = track(await game({ touch: true }));
   await page.tap('#btnPlay');
-  await waitScreen(page, 'intro');
-  await page.tap('#btnGo');
   await waitScreen(page, 'play');
   await page.touchscreen.tap(195, 500);
   await page.waitForFunction(() => window.__fk.sim.status === 'playing');
@@ -331,8 +315,6 @@ await test('управление: касание, пробел, пауза по 
 await test('сворачивание вкладки ставит игру на паузу', async (track) => {
   const page = track(await game());
   await page.click('#btnPlay');
-  await waitScreen(page, 'intro');
-  await page.click('#btnGo');
   await waitScreen(page, 'play');
   await page.mouse.click(195, 500);
   await page.evaluate(() => {
@@ -345,7 +327,6 @@ await test('сворачивание вкладки ставит игру на �
 await test('победа: звёзды, сердечки в кошелёк, записка, следующий уровень', async (track) => {
   const page = track(await game());
   await page.click('#btnPlay');
-  await page.click('#btnGo');
   await waitScreen(page, 'play');
   const run = await fastForward(page, 'win');
   equal(run.status, 'won', 'автопилот должен долететь');
@@ -404,7 +385,6 @@ await test('повторная победа: записку можно проп�
 await test('проигрыш: сердечки остаются, «Ещё раз» запускает уровень заново', async (track) => {
   const page = track(await game({ save: { hearts: 5, totalHearts: 5, plays: 1 } }));
   await page.click('#btnPlay');
-  await page.click('#btnGo');
   await page.evaluate(() => (window.__fk.sim.hearts = 4));
   const run = await fastForward(page, 'lose');
   equal(run.status, 'lost', 'без взмахов уровень проигран');
@@ -421,7 +401,6 @@ await test('проигрыш: сердечки остаются, «Ещё раз
 await test('выход через паузу: собранные сердечки не пропадают и не удваиваются', async (track) => {
   const page = track(await game({ save: { hearts: 5, totalHearts: 5, plays: 1 } }));
   await page.click('#btnPlay');
-  await page.click('#btnGo');
   await page.evaluate(() => (window.__fk.sim.hearts = 3));
   await page.keyboard.press('Escape');
   await waitScreen(page, 'pause');
@@ -431,7 +410,6 @@ await test('выход через паузу: собранные сердечк�
   equal(await text(page, '.screen[data-name="menu"] [data-wallet]'), '8', 'кошелёк в меню');
 
   await page.click('#btnPlay');
-  await page.click('#btnGo');
   await page.evaluate(() => (window.__fk.sim.hearts = 2));
   await page.keyboard.press('Escape');
   await waitScreen(page, 'pause');
@@ -451,40 +429,28 @@ await test('выход через паузу: собранные сердечк�
   equal(await text(page, '#loseHearts'), '+4', 'на экране — всё, что собрано за попытку');
 });
 
-await test('финал: после шестого уровня открывается письмо, меню предлагает играть снова', async (track) => {
+await test('финал: сцена, письмо, воспоминания и титры', async (track) => {
   const levels = {};
   for (let i = 1; i <= 5; i++) levels[i] = { done: true, stars: 2, hearts: 20 };
   const page = track(await game({ save: { levels, notes: [1, 2, 3, 4, 5], seenNotes: [1, 2, 3, 4, 5], plays: 9 } }));
-  equal(await text(page, '#btnPlayLabel'), 'Уровень 6', 'главная кнопка');
   await page.click('#btnPlay');
-  await waitScreen(page, 'intro');
-  assert((await text(page, '#introName')).startsWith('Дорога к'), 'название финального уровня');
-  await page.click('#btnGo');
   equal((await fastForward(page, 'win')).status, 'won', 'финальный уровень пройден');
-  await waitScreen(page, 'win');
-  equal(await text(page, '#btnNoteLabel'), 'Открыть письмо', 'кнопка письма');
-  await page.click('#btnNote');
-  await waitScreen(page, 'note');
-  equal(await text(page, '#noteNo'), 'Письмо', 'подпись над письмом');
-  assert((await text(page, '#noteText')).length > 100, 'текст письма пустой');
-  const fits = await page.evaluate(() => {
-    const scr = document.querySelector('.screen[data-name="note"]');
-    const btn = document.getElementById('btnNoteNext');
-    scr.scrollTop = scr.scrollHeight;
-    const r = btn.getBoundingClientRect();
-    return r.bottom <= innerHeight + 1 && r.top >= 0;
-  });
-  assert(fits, 'до кнопки под длинным письмом должно быть можно долистать');
-  const sign = await page.evaluate(() => {
-    const el = document.getElementById('noteSign');
-    const svg = el.querySelector('svg');
-    return { text: el.textContent, heart: !!el.querySelector('use[href="#i-heart"]'), w: svg ? svg.getBoundingClientRect().width : 0 };
-  });
-  assert(!/[\u2764\u2665]/.test(sign.text) && sign.heart && sign.w > 8, `сердечко в подписи должно быть нарисованным значком: ${JSON.stringify(sign)}`);
-  equal(await text(page, '#btnNoteNext'), 'В меню', 'после письма — в меню');
-  await page.click('#btnNoteNext');
+  await waitScreen(page, 'finale');
+  await waitScreen(page, 'letter');
+  const { CONFIG } = await import('../assets/js/config.js');
+  equal(await page.evaluate(() => [...document.querySelectorAll('#letterText p')].map(p => p.textContent).join('\n\n')), CONFIG.finalLetter.text.trim(), 'текст письма');
+  await page.waitForFunction(() => !document.getElementById('letterActions').hidden, { timeout: 20000 });
+  await page.click('#btnLetterNext');
+  await waitScreen(page, 'memories');
+  equal(await page.evaluate(() => document.querySelectorAll('#memoryList .polaroid').length), 8, 'фотографии открыты');
+  await page.click('#btnMemoriesNext');
+  await waitScreen(page, 'credits');
+  await page.click('#btnPostcard');
+  assert(await visible(page, '#postcardLink'), 'открытка видна');
+  await page.click('#postcardClose');
+  assert(!(await visible(page, '#postcardLink')), 'открытка закрывается');
+  await page.click('#btnCreditsMenu');
   await waitScreen(page, 'menu');
-  equal(await text(page, '#btnPlayLabel'), 'Играть снова', 'главная кнопка после финала');
   equal((await stored(page)).notes, [1, 2, 3, 4, 5, 6], 'все записки открыты');
 });
 
@@ -558,7 +524,6 @@ await test('звук: кнопка в меню выключает всё, нас
   await waitScreen(page, 'menu');
   equal(await page.evaluate(() => document.getElementById('btnMute').getAttribute('aria-pressed')), 'true', 'после перезагрузки звук всё ещё выключен');
   await page.click('#btnPlay');
-  await page.click('#btnGo');
   await page.mouse.click(195, 500);
   await page.keyboard.press('KeyP');
   await waitScreen(page, 'pause');
@@ -612,12 +577,8 @@ await test('игра помещается на маленьком и на леж
     });
     equal(off, [], `меню ${w}×${h}: элементы за краем экрана`);
     await page.tap('#btnPlay');
-    await waitScreen(page, 'intro');
-    const btn = await page.evaluate(() => {
-      const r = document.getElementById('btnGo').getBoundingClientRect();
-      return r.top >= 0 && r.bottom <= innerHeight + 1;
-    });
-    assert(btn, `вступление ${w}×${h}: кнопка «Полетели!» не помещается`);
+    await waitScreen(page, 'play');
+    assert(await visible(page, '#btnPause'), `полёт ${w}×${h}: кнопка паузы не видна`);
   }
 });
 

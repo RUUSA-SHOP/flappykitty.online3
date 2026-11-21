@@ -25,6 +25,8 @@ export const LEVELS = [
     move: 0,
     hazards: [],
     powerups: ['shield'],
+    // «момент уровня»: короткая сцена у самого финиша, на прохождение не влияет
+    moment: { kind: 'plush', at: 0.8 },
   },
   {
     id: 2,
@@ -39,6 +41,7 @@ export const LEVELS = [
     move: 0,
     hazards: ['drop'],
     powerups: ['shield', 'magnet'],
+    moment: { kind: 'faucet', at: 0.8 },
   },
   {
     id: 3,
@@ -53,6 +56,7 @@ export const LEVELS = [
     move: 34,
     hazards: ['balloon'],
     powerups: ['magnet', 'catnip'],
+    moment: { kind: 'candles', at: 0.8 },
   },
   {
     id: 4,
@@ -67,6 +71,7 @@ export const LEVELS = [
     move: 0,
     hazards: ['cucumber'],
     powerups: ['shield', 'magnet', 'catnip'],
+    moment: { kind: 'fireworks', at: 0.8 },
   },
   {
     id: 5,
@@ -81,6 +86,7 @@ export const LEVELS = [
     move: 44,
     hazards: ['wind'],
     powerups: ['shield', 'magnet', 'catnip'],
+    moment: { kind: 'aurora', at: 0.8 },
   },
   {
     id: 6,
@@ -95,6 +101,7 @@ export const LEVELS = [
     move: 40,
     hazards: ['balloon', 'cucumber'],
     powerups: ['shield', 'magnet', 'catnip'],
+    moment: { kind: 'bloom', at: 0.86 },
   },
 ];
 

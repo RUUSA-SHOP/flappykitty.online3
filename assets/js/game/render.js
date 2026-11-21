@@ -1,4 +1,7 @@
-/* Flappy Kitty · отрисовка. Читает состояние Sim и рисует кадр. */
+/* Flappy Kitty · отрисовка. Читает состояние Sim и рисует кадр.
+   Здесь же — вся «сочность»: сжатие и растяжение Мии, камера, след,
+   искры при пролёте вплотную, сердечки, улетающие в счётчик, облачко
+   с репликой и короткие сцены-«моменты» в конце каждого уровня. */
 
 import { WORLD, POWERUPS } from './levels.js';
 import { THEMES, hash, heartPath, rr } from './themes.js';
@@ -7,6 +10,7 @@ const G = WORLD.GROUND;
 const TAU = Math.PI * 2;
 const FONT = 'Nunito, system-ui, sans-serif';
 const BALLOON_COLORS = ['#F58CA5', '#F4C97B', '#9CC7E8', '#C9A7E8'];
+const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 
 export class Renderer {
   constructor(canvas) {
@@ -18,15 +22,37 @@ export class Renderer {
     this.flash = 0;
     this.flashColor = '255,255,255';
     this.wingT = 1;
+    this.wingSpeed = 1;
     this.trailT = 0;
+    this.trail = [];
     this.viewW = 400;
     this.viewH = 720;
     this.k = 1;
+    this.dpr = 1;
+    this.scale = 1;
     this.offY = 0;
     this.skin = null;
     this.sticker = null;
     this.finishLabel = '';
+    this.hudTarget = null; // куда летят собранные сердечки (в координатах мира)
     this.reduceMotion = typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    // камера
+    this.cam = { zoom: 1, zoomTo: 1, dx: 0, dy: 0, dxTo: 0, dyTo: 0 };
+
+    // Мия: сжатие/растяжение и «отдача» от взмаха и приземления
+    this.pulse = 0; // + — вытянулась вверх, − — сплющилась
+    this.landPulse = 0;
+    this.prevY = 330;
+    this.prevVy = 0;
+
+    // облачко с репликой
+    this.bubble = { text: '', t: 99, max: 2.4 };
+
+    // короткий «момент» в конце уровня
+    this.momentFx = null;
+    this.momentText = '';
+    this.warm = 0; // насколько мир «потеплел» к финалу (0..1)
   }
 
   /** Подгоняет холст под размер контейнера. Возвращает ширину мира в условных пикселях. */
@@ -37,6 +63,8 @@ export class Renderer {
     const scale = Math.min(cssH / WORLD.H, cssW / 380);
     this.viewW = cssW / scale;
     this.viewH = cssH / scale;
+    this.scale = scale;
+    this.dpr = dpr;
     this.k = scale * dpr;
     // на высоких экранах мир сдвигается вниз: сверху остаётся место под счётчики
     this.offY = Math.max(0, Math.min(60, (this.viewH - WORLD.H) * 0.55));
@@ -49,12 +77,31 @@ export class Renderer {
     return this.viewW;
   }
 
+  /** Экранная точка (в CSS-пикселях относительно холста) → координаты мира. */
+  toWorld(cssX, cssY) {
+    return { x: cssX / this.scale, y: cssY / this.scale - this.offY };
+  }
+
   setSkin(skin, img) {
     this.skin = skin;
     this.sticker = makeSticker(img, skin.w);
   }
 
-  /* ---------- эффекты по событиям симуляции ---------- */
+  /* ---------- реакция на события ---------- */
+
+  /** Мия говорит короткую реплику. */
+  say(text, dur = 2.2) {
+    if (!text) return;
+    this.bubble.text = text;
+    this.bubble.t = 0;
+    this.bubble.max = dur;
+  }
+
+  /** Запускает сцену-«момент» в конце уровня. */
+  moment(kind, text) {
+    this.momentFx = { kind, t: 0, dur: kind === 'bloom' ? 5 : 4, seeds: Array.from({ length: 24 }, (_, i) => hash(i + kind.length * 13)) };
+    this.momentText = text || '';
+  }
 
   handle(ev, sim) {
     const sx = (ev.x != null ? ev.x : sim.dist + sim.miaX) - sim.dist;
@@ -64,56 +111,78 @@ export class Renderer {
     switch (ev.type) {
       case 'flap':
         this.wingT = 0;
-        this.puff(mx - 26, my + 14, 2, 'rgba(255,255,255,.8)', 60);
+        this.pulse = Math.max(this.pulse, 0.55);
+        this.puff(mx - 26, my + 14, 3, 'rgba(255,255,255,.85)', 70);
         break;
       case 'heart':
-        this.burst(sx, sy, 5, ['#FF5C7A', '#FFB3C6', '#FFFFFF'], 150, 'spark');
+        this.burst(sx, sy, 6, ['#FF5C7A', '#FFB3C6', '#FFFFFF'], 160, 'spark');
+        this.flyHeart(sx, sy);
         break;
       case 'fish':
-        this.burst(sx, sy, 10, ['#FFC94A', '#FFE9A6', '#FFFFFF'], 220, 'spark');
+        this.burst(sx, sy, 12, ['#FFC94A', '#FFE9A6', '#FFFFFF'], 240, 'spark');
+        this.ring(sx, sy, '#FFC94A');
         this.text(sx, sy - 20, '+5', '#FFC94A');
+        for (let i = 0; i < 5; i++) this.flyHeart(sx + (i - 2) * 8, sy);
         break;
       case 'pop':
-        this.burst(sx, sy, 16, ['#F58CA5', '#F4C97B', '#9CC7E8', '#FFFFFF', '#9CC79A'], 280, 'confetti');
-        if (ev.hue !== 9) this.text(sx, sy - 24, '+2', '#FF5C7A');
+        this.burst(sx, sy, 18, ['#F58CA5', '#F4C97B', '#9CC7E8', '#FFFFFF', '#9CC79A'], 300, 'confetti');
+        this.shake = Math.max(this.shake, 4);
+        if (ev.hue !== 9) { this.text(sx, sy - 24, '+2', '#FF5C7A'); this.flyHeart(sx, sy); this.flyHeart(sx + 10, sy + 6); }
         break;
       case 'power':
         this.ring(sx, sy, POWERUPS[ev.kind].color);
-        this.text(mx, my - 54, POWERUPS[ev.kind].name + '!', POWERUPS[ev.kind].color);
+        this.ring(sx, sy, '#FFFFFF');
+        this.burst(sx, sy, 10, [POWERUPS[ev.kind].color, '#FFFFFF'], 190, 'spark');
+        this.text(mx, my - 58, POWERUPS[ev.kind].name + '!', POWERUPS[ev.kind].color);
         break;
       case 'shieldBreak':
         this.ring(mx, my, '#8FD3F4');
-        this.burst(mx, my, 12, ['#BFE9FF', '#FFFFFF'], 260, 'spark');
-        this.text(mx, my - 54, 'Пузырь лопнул', '#8FD3F4');
-        this.shake = 6;
+        this.burst(mx, my, 14, ['#BFE9FF', '#FFFFFF'], 280, 'spark');
+        this.text(mx, my - 58, 'Пузырь лопнул', '#8FD3F4');
+        this.shake = 8;
+        this.zoomPunch(1.05);
+        break;
+      case 'nearMiss':
+        this.burst(sx, sy, 7, ['#FFFFFF', '#FFE9A6'], 170, 'spark');
+        this.text(sx, sy + (ev.above ? 26 : -26), 'Вжух!', '#FFFFFF', 18);
+        this.zoomPunch(1.025);
         break;
       case 'hit':
-        this.shake = 12;
-        this.flash = 0.35;
+        this.shake = 14;
+        this.flash = 0.38;
         this.flashColor = '255,92,122';
-        this.burst(mx, my, 12, ['#E8C08A', '#D9A066', '#FFF3E0'], 260, 'puff');
-        this.text(mx, my - 54, ev.lives > 0 ? 'Ой!' : 'Кусь!', '#FF5C7A');
+        this.landPulse = -0.6;
+        this.zoomPunch(1.09);
+        this.burst(mx, my, 14, ['#E8C08A', '#D9A066', '#FFF3E0'], 280, 'puff');
+        this.ring(mx, my, 'rgba(255,92,122,.9)');
+        this.text(mx, my - 58, ev.lives > 0 ? 'Ой!' : 'Кусь!', '#FF5C7A');
         break;
       case 'splash':
-        this.burst(sx, G - 4, 4, ['#8FD3F4', '#D6F0FF'], 120, 'spark');
+        this.burst(sx, G - 4, 5, ['#8FD3F4', '#D6F0FF'], 140, 'spark');
         break;
       case 'theme':
         this.flash = 0.6;
         this.flashColor = '255,255,255';
         break;
+      case 'moment':
+        this.moment(ev.kind, ev.text);
+        break;
       case 'win':
         this.flash = 0.5;
         this.flashColor = '255,255,255';
+        this.zoomPunch(1.06);
         for (let i = 0; i < 46; i++) {
           this.particles.push({
             kind: 'heart', x: this.viewW * Math.random(), y: -20 - Math.random() * 200, vx: (Math.random() - 0.5) * 60, vy: 120 + Math.random() * 160,
             g: 30, life: 0, max: 3.5 + Math.random() * 2, size: 7 + Math.random() * 9, color: ['#FF5C7A', '#FFB3C6', '#FFFFFF', '#FFC94A'][i % 4], rot: Math.random() * 6, vr: (Math.random() - 0.5) * 4,
           });
         }
-        this.burst(mx, my, 20, ['#FF5C7A', '#FFB3C6', '#FFFFFF'], 320, 'heart');
+        this.burst(mx, my, 22, ['#FF5C7A', '#FFB3C6', '#FFFFFF'], 340, 'heart');
         break;
     }
   }
+
+  /* ---------- частицы ---------- */
 
   burst(x, y, n, colors, speed, kind) {
     for (let i = 0; i < n; i++) {
@@ -133,8 +202,20 @@ export class Renderer {
   ring(x, y, color) {
     this.particles.push({ kind: 'ring', x, y, vx: 0, vy: 0, g: 0, life: 0, max: 0.5, size: 20, color, rot: 0, vr: 0 });
   }
-  text(x, y, text, color) {
-    this.particles.push({ kind: 'text', x: Math.max(60, Math.min(this.viewW - 60, x)), y, vx: 0, vy: -46, g: 0, life: 0, max: 0.95, size: 22, color, text, rot: 0, vr: 0 });
+  text(x, y, text, color, size = 22) {
+    this.particles.push({ kind: 'text', x: Math.max(60, Math.min(this.viewW - 60, x)), y, vx: 0, vy: -46, g: 0, life: 0, max: 0.95, size, color, text, rot: 0, vr: 0 });
+  }
+  /** Сердечко улетает в счётчик в углу экрана. */
+  flyHeart(x, y) {
+    if (!this.hudTarget) return;
+    this.particles.push({
+      kind: 'fly', x, y, vx: 0, vy: 0, g: 0, life: 0, max: 0.52, size: 9, color: '#FF5C7A', rot: 0, vr: 0,
+      tx: this.hudTarget.x, ty: this.hudTarget.y, sx: x, sy: y,
+    });
+  }
+  zoomPunch(z) {
+    if (this.reduceMotion) return;
+    this.cam.zoomTo = Math.max(this.cam.zoomTo, z);
   }
 
   /* ---------- кадр ---------- */
@@ -146,14 +227,27 @@ export class Renderer {
     const t = (this.time += dt);
     const theme = THEMES[sim.theme] || THEMES.living;
     const playing = sim.status === 'playing';
+    const cam = this.cam;
+
+    // камера: мягко возвращается в покой
+    const ease = 1 - Math.pow(0.0009, dt);
+    cam.zoom += (cam.zoomTo - cam.zoom) * ease;
+    cam.zoomTo += (1 - cam.zoomTo) * (1 - Math.pow(0.02, dt));
+    cam.dx += (cam.dxTo - cam.dx) * ease;
+    cam.dy += (cam.dyTo - cam.dy) * ease;
+    cam.dxTo *= Math.pow(0.02, dt);
+    cam.dyTo *= Math.pow(0.02, dt);
 
     ctx.setTransform(this.k, 0, 0, this.k, 0, 0);
     ctx.save();
-    if (this.shake > 0.2 && !this.reduceMotion) {
-      // чуть увеличиваем кадр, чтобы при тряске не оголялись края
+    const shakeOn = this.shake > 0.2 && !this.reduceMotion;
+    const z = cam.zoom * (shakeOn ? 1.04 : 1);
+    if (z !== 1 || shakeOn || cam.dx || cam.dy) {
       ctx.translate(W / 2, VH / 2);
-      ctx.scale(1.04, 1.04);
-      ctx.translate(-W / 2 + (Math.random() - 0.5) * this.shake, -VH / 2 + (Math.random() - 0.5) * this.shake);
+      ctx.scale(z, z);
+      ctx.translate(-W / 2, -VH / 2);
+      if (shakeOn) ctx.translate((Math.random() - 0.5) * this.shake, (Math.random() - 0.5) * this.shake);
+      else ctx.translate(cam.dx, cam.dy);
     }
     this.shake *= Math.pow(0.002, dt);
     ctx.translate(0, this.offY);
@@ -161,6 +255,7 @@ export class Renderer {
     theme.sky(ctx, W, VH, t);
     theme.far(ctx, W, sim.scroll, t);
     this.ambient(theme.ambient, W, sim.scroll, t);
+    if (this.momentFx) this.drawMoment(ctx, W, VH, t, dt, sim);
 
     const wx = (x) => x - sim.dist;
 
@@ -208,21 +303,18 @@ export class Renderer {
       else if (h.type === 'cucumber') this.cucumber(x, h.y, t);
     }
 
-    // след
+    // след-лента
     if (playing && !this.reduceMotion) {
       this.trailT -= dt;
       if (this.trailT <= 0) {
-        this.trailT = sim.catnip > 0 ? 0.025 : 0.07;
-        const rainbow = ['#FF5C7A', '#FFB84A', '#FFE66B', '#8FD17F', '#7FB7E6', '#C9A7E8'];
-        this.particles.push({
-          kind: sim.catnip > 0 ? 'spark' : 'dot', x: sim.miaX - 30, y: sim.mia.y + 8 + (Math.random() - 0.5) * 16, vx: -sim.speed * 0.8, vy: (Math.random() - 0.5) * 20, g: 0,
-          life: 0, max: sim.catnip > 0 ? 0.7 : 0.5, size: sim.catnip > 0 ? 5 : 3.2,
-          color: sim.catnip > 0 ? rainbow[Math.floor(t * 20) % 6] : theme.dark ? 'rgba(255,240,210,.9)' : 'rgba(255,255,255,.95)', rot: 0, vr: 6,
-        });
+        this.trailT = sim.catnip > 0 ? 0.02 : 0.028;
+        this.trail.push({ x: sim.dist + sim.miaX - 22, y: sim.mia.y + 6, catnip: sim.catnip > 0, inv: sim.inv > 0 });
       }
     }
+    this.drawTrail(ctx, sim, dt, theme);
 
     this.mia(sim, t, dt);
+    this.bubbleDraw(ctx, sim, dt);
     this.drawParticles(dt, sim, playing);
 
     theme.ground(ctx, W, VH, sim.scroll);
@@ -230,6 +322,12 @@ export class Renderer {
     // предупреждения
     for (const w of sim.warnings) this.warning(W, w.y, t);
     if (sim.wind.state !== 'idle') this.wind(sim, W, t);
+
+    // мир «теплеет» к финалу
+    if (this.warm > 0.002) {
+      ctx.fillStyle = `rgba(255,196,214,${this.warm * 0.3})`;
+      ctx.fillRect(-40, -200, W + 80, VH + 300);
+    }
 
     ctx.restore();
 
@@ -240,6 +338,227 @@ export class Renderer {
       ctx.fillRect(0, 0, W, VH);
       this.flash *= Math.pow(0.004, dt);
     }
+
+    // импульсы Мии затухают
+    this.pulse *= Math.pow(0.0007, dt);
+    this.landPulse *= Math.pow(0.0004, dt);
+    if (this.momentFx) {
+      this.momentFx.t += dt;
+      if (this.momentFx.t > this.momentFx.dur) this.momentFx = null;
+    }
+  }
+
+  /* ---------- след ---------- */
+
+  drawTrail(ctx, sim, dt, theme) {
+    const tr = this.trail;
+    for (let i = tr.length - 1; i >= 0; i--) {
+      tr[i].x -= sim.speed * dt;
+      if (tr[i].x - sim.dist < -80) tr.splice(i, 1);
+    }
+    if (tr.length < 2) return;
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    for (let i = 1; i < tr.length; i++) {
+      const a = tr[i - 1];
+      const b = tr[i];
+      const f = i / tr.length;
+      const x0 = a.x - sim.dist;
+      const x1 = b.x - sim.dist;
+      if (x1 < -60) continue;
+      ctx.globalAlpha = f * 0.5;
+      ctx.lineWidth = 2 + f * (b.catnip ? 16 : 9);
+      ctx.strokeStyle = b.catnip ? `hsl(${(this.time * 260 + i * 26) % 360} 90% 72%)` : b.inv ? 'rgba(255,225,235,.9)' : theme.dark ? 'rgba(255,238,205,.95)' : 'rgba(255,255,255,.95)';
+      ctx.beginPath();
+      ctx.moveTo(x0, a.y);
+      ctx.lineTo(x1, b.y);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  /* ---------- «момент» уровня ---------- */
+
+  drawMoment(ctx, W, VH, t, dt, sim) {
+    const fx = this.momentFx;
+    const p = fx.t / fx.dur;
+    if (p > 1) return;
+    const fade = p < 0.12 ? p / 0.12 : p > 0.78 ? (1 - p) / 0.22 : 1;
+    ctx.save();
+    ctx.globalAlpha = clamp(fade, 0, 1);
+    switch (fx.kind) {
+      case 'fireworks': {
+        for (let i = 0; i < 6; i++) {
+          const s = fx.seeds[i];
+          const period = 1.1 + s * 0.5;
+          const ph = (fx.t + s * 2) % period;
+          const cx = (s * 1.7 % 1) * W;
+          const cy = 90 + fx.seeds[i + 6] * 200;
+          if (ph < 0.45) {
+            const f = ph / 0.45;
+            ctx.strokeStyle = 'rgba(255,240,200,.9)';
+            ctx.lineWidth = 2.5;
+            ctx.beginPath();
+            ctx.moveTo(cx, G - 20);
+            ctx.lineTo(cx + Math.sin(f * 3) * 6, G - 20 - (G - 20 - cy) * f);
+            ctx.stroke();
+          } else {
+            const f = (ph - 0.45) / (period - 0.45);
+            const R = 20 + f * 130;
+            const col = ['#FF8FB0', '#FFE08A', '#9CC7E8', '#C9A7E8'][i % 4];
+            for (let k = 0; k < 14; k++) {
+              const a = (k / 14) * TAU + s * 3;
+              const rr2 = R * (0.75 + 0.25 * Math.sin(k * 2.1));
+              ctx.fillStyle = col;
+              ctx.globalAlpha = clamp(fade * (1 - f), 0, 1);
+              ctx.beginPath();
+              ctx.arc(cx + Math.cos(a) * rr2, cy + Math.sin(a) * rr2 * 0.95 + f * 26, 3.4 * (1 - f) + 1, 0, TAU);
+              ctx.fill();
+            }
+            ctx.globalAlpha = clamp(fade, 0, 1);
+          }
+        }
+        break;
+      }
+      case 'aurora': {
+        for (let band = 0; band < 3; band++) {
+          ctx.beginPath();
+          const base = 60 + band * 62;
+          for (let x = -20; x <= W + 20; x += 16) {
+            const y = base + Math.sin(x * 0.012 + t * 0.7 + band * 1.7) * 34 + Math.sin(x * 0.03 + t * 1.3) * 12;
+            if (x === -20) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+          }
+          const grd = ctx.createLinearGradient(0, base - 40, 0, base + 150);
+          const hue = ['#7CF3C4', '#8FD3F4', '#D9A7F5'][band];
+          grd.addColorStop(0, 'rgba(255,255,255,0)');
+          grd.addColorStop(0.35, hexA(hue, 0.5));
+          grd.addColorStop(1, 'rgba(255,255,255,0)');
+          ctx.strokeStyle = grd;
+          ctx.lineWidth = 78;
+          ctx.stroke();
+        }
+        break;
+      }
+      case 'faucet': {
+        const cx = W * 0.5;
+        ctx.fillStyle = 'rgba(160,220,255,.55)';
+        const wob = Math.sin(t * 9) * 6;
+        ctx.beginPath();
+        ctx.moveTo(cx - 16, -100);
+        ctx.quadraticCurveTo(cx + wob, 240, cx - 40, G);
+        ctx.lineTo(cx + 40, G);
+        ctx.quadraticCurveTo(cx - wob, 240, cx + 16, -100);
+        ctx.fill();
+        for (let i = 0; i < 18; i++) {
+          const s = fx.seeds[i];
+          const y = ((fx.t * 520 * (0.7 + s * 0.6) + s * 700) % (G + 60)) - 30;
+          ctx.fillStyle = 'rgba(215,240,255,.9)';
+          ctx.beginPath();
+          ctx.arc(cx + Math.sin(i * 2.3 + t) * 34, y, 2.5 + s * 2.5, 0, TAU);
+          ctx.fill();
+        }
+        ctx.fillStyle = 'rgba(255,255,255,.75)';
+        for (let i = 0; i < 10; i++) {
+          const s = fx.seeds[i + 10];
+          const a = Math.PI + (i / 10) * Math.PI;
+          const r = 30 + Math.sin(t * 6 + i) * 8 + s * 20;
+          ctx.beginPath();
+          ctx.arc(cx + Math.cos(a) * r, G - 6 + Math.sin(a) * r * 0.5, 4, 0, TAU);
+          ctx.fill();
+        }
+        break;
+      }
+      case 'candles': {
+        const n = 7;
+        for (let i = 0; i < n; i++) {
+          const x = ((i + 0.5) / n) * W;
+          const gone = fx.t > 0.5 + i * 0.22;
+          ctx.fillStyle = '#FFFDFB';
+          rr(ctx, x - 7, G - 90, 14, 90, 4);
+          ctx.fill();
+          ctx.strokeStyle = '#C96A84';
+          ctx.lineWidth = 2;
+          ctx.stroke();
+          if (!gone) {
+            const fl = 1 + Math.sin(t * 12 + i) * 0.1;
+            ctx.fillStyle = 'rgba(255,196,60,.3)';
+            ctx.beginPath();
+            ctx.arc(x, G - 106, 17 * fl, 0, TAU);
+            ctx.fill();
+            ctx.fillStyle = '#FFB830';
+            ctx.beginPath();
+            ctx.moveTo(x, G - 90 - 28 * fl);
+            ctx.quadraticCurveTo(x + 9, G - 104, x, G - 92);
+            ctx.quadraticCurveTo(x - 9, G - 104, x, G - 90 - 28 * fl);
+            ctx.fill();
+          } else {
+            ctx.strokeStyle = 'rgba(180,170,175,.6)';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(x, G - 92);
+            ctx.quadraticCurveTo(x + 8, G - 112, x + 2, G - 132);
+            ctx.stroke();
+          }
+        }
+        break;
+      }
+      case 'plush': {
+        for (let i = 0; i < 5; i++) {
+          const s = fx.seeds[i];
+          const x = ((i + 0.5) / 5) * W;
+          const jump = Math.abs(Math.sin(fx.t * 4 + s * 4)) * 46;
+          ctx.save();
+          ctx.translate(x, G - 26 - jump);
+          ctx.rotate(Math.sin(fx.t * 4 + s * 4) * 0.25);
+          ctx.fillStyle = ['#F4E8DA', '#CDB09A', '#8E6FA6'][i % 3];
+          ctx.beginPath();
+          ctx.ellipse(0, 0, 20, 22, 0, 0, TAU);
+          ctx.fill();
+          ctx.beginPath();
+          ctx.arc(-11, -20, 7, 0, TAU);
+          ctx.arc(11, -20, 7, 0, TAU);
+          ctx.fill();
+          ctx.fillStyle = '#3A1D2E';
+          ctx.beginPath();
+          ctx.arc(-6, -3, 2, 0, TAU);
+          ctx.arc(6, -3, 2, 0, TAU);
+          ctx.fill();
+          ctx.restore();
+        }
+        break;
+      }
+      case 'bloom': {
+        // лепестки и лучи, сходящиеся к финишу
+        const fxp = sim.finishX != null ? sim.finishX - sim.dist : W;
+        for (let i = 0; i < 12; i++) {
+          const a = (i / 12) * TAU + t * 0.35;
+          const r = 120 + Math.sin(t * 1.4 + i) * 40 + fx.t * 26;
+          ctx.strokeStyle = `rgba(255,255,255,${0.16 + 0.1 * Math.sin(t * 2 + i)})`;
+          ctx.lineWidth = 12;
+          ctx.beginPath();
+          ctx.moveTo(fxp + Math.cos(a) * r, 320 + Math.sin(a) * r * 0.8);
+          ctx.lineTo(fxp + Math.cos(a) * (r + 90), 320 + Math.sin(a) * (r + 90) * 0.8);
+          ctx.stroke();
+        }
+        for (let i = 0; i < 26; i++) {
+          const s = fx.seeds[i];
+          const y = ((s * 800 + fx.t * (60 + s * 90)) % (G + 40)) - 20;
+          const x = ((s * 3.7 + fx.t * 0.06) % 1) * W;
+          ctx.save();
+          ctx.translate(x, y);
+          ctx.rotate(t * 1.5 + i);
+          ctx.fillStyle = i % 3 === 0 ? '#FFB3C6' : '#FFFDF6';
+          ctx.beginPath();
+          ctx.ellipse(0, 0, 7, 4, 0, 0, TAU);
+          ctx.fill();
+          ctx.restore();
+        }
+        break;
+      }
+    }
+    ctx.restore();
   }
 
   ambient(kind, W, scroll, t) {
@@ -654,6 +973,8 @@ export class Renderer {
     }
   }
 
+  /* ---------- Мия ---------- */
+
   mia(sim, t, dt) {
     const ctx = this.ctx;
     const sk = this.skin;
@@ -665,6 +986,11 @@ export class Renderer {
     const w = sk.w * (sim.catnip > 0 ? 1.12 : 1);
     const h = w * st.ratio;
     const padW = w * st.pad;
+
+    // сжатие и растяжение: от скорости, от взмаха и от удара о пол
+    const vyStretch = clamp(-m.vy / 2400, -0.15, 0.19);
+    const sy = 1 + vyStretch + this.pulse * 0.22 + this.landPulse * 0.3;
+    const sx = 1 - (sy - 1) * 0.62 + this.landPulse * 0.12;
 
     ctx.save();
     ctx.translate(sim.miaX, m.y);
@@ -682,16 +1008,28 @@ export class Renderer {
       ctx.fill();
     }
 
-    // крылья
+    ctx.save();
+    ctx.scale(sx, sy);
+
+    // крылья: два слоя, фаза зависит от того, вверх Мия идёт или вниз
     const flap = Math.sin(Math.PI * this.wingT);
+    const rise = clamp(-m.vy / 500, -0.5, 0.7);
     const idle = Math.sin(t * 7) * 0.1;
     const wxp = (sk.wings[0] - sk.ax) * w;
     const wyp = (sk.wings[1] - sk.ay) * h;
     const ws = Math.max(34, w * 0.4);
-    wing(ctx, wxp - 6, wyp - 4, ws * 0.9, 0.5 + idle - flap * 1.15, '#F3E4E8');
-    wing(ctx, wxp, wyp, ws, 0.25 + idle - flap * 1.25, '#FFFFFF');
+    // размытие в движении: три «призрака» крыла
+    const ghosts = this.reduceMotion || flap < 0.35 ? 1 : 3;
+    for (let gi = 0; gi < ghosts; gi++) {
+      const f = ghosts === 1 ? 1 : (gi + 1) / ghosts;
+      ctx.globalAlpha = (blink ? 0.45 : 1) * (gi === ghosts - 1 ? 1 : 0.16);
+      wing(ctx, wxp - 6, wyp - 4, ws * 0.9, 0.5 + idle - (flap * f) * 1.15 - rise * 0.22, '#F3E4E8');
+      wing(ctx, wxp, wyp, ws, 0.25 + idle - (flap * f) * 1.25 - rise * 0.3, '#FFFFFF');
+    }
+    ctx.globalAlpha = blink ? 0.45 : 1;
 
     ctx.drawImage(st.canvas, -sk.ax * w - padW, -sk.ay * h - padW, w + padW * 2, h + padW * 2);
+    ctx.restore();
 
     if (sim.shield) {
       ctx.globalAlpha = 1;
@@ -711,6 +1049,46 @@ export class Renderer {
     ctx.restore();
   }
 
+  /* ---------- облачко с репликой ---------- */
+
+  bubbleDraw(ctx, sim, dt) {
+    const b = this.bubble;
+    b.t += dt;
+    if (!b.text || b.t > b.max) return;
+    const f = b.t / b.max;
+    const alpha = f < 0.12 ? f / 0.12 : f > 0.75 ? (1 - f) / 0.25 : 1;
+    const sk = this.skin;
+    const w = sk ? sk.w : 100;
+    ctx.save();
+    ctx.globalAlpha = clamp(alpha, 0, 1);
+    ctx.font = `800 20px ${FONT}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const tw = ctx.measureText(b.text).width;
+    const bw = tw + 30;
+    const bh = 38;
+    let bx = sim.miaX;
+    const by = sim.mia.y - w * 0.45 - bh - 12;
+    bx = clamp(bx, bw / 2 + 8, this.viewW - bw / 2 - 8);
+    // хвостик
+    ctx.fillStyle = '#FFFDF9';
+    ctx.strokeStyle = '#3A1D2E';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(bx - 8, by + bh / 2 - 2);
+    ctx.lineTo(sim.miaX + 6, sim.mia.y - w * 0.42);
+    ctx.lineTo(bx + 10, by + bh / 2 - 2);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    rr(ctx, bx - bw / 2, by - bh / 2, bw, bh, 14);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = '#3A1D2E';
+    ctx.fillText(b.text, bx, by + 1);
+    ctx.restore();
+  }
+
   drawParticles(dt, sim, playing) {
     const ctx = this.ctx;
     const ps = this.particles;
@@ -721,11 +1099,24 @@ export class Renderer {
         ps.splice(i, 1);
         continue;
       }
+      const f = p.life / p.max;
+      if (p.kind === 'fly' && this.hudTarget) {
+        // сердечко по дуге улетает в счётчик
+        const e = f * f * (3 - 2 * f);
+        const cx = (p.sx + p.tx) / 2;
+        const cy = Math.min(p.sy, p.ty) - 90;
+        const x = (1 - e) * (1 - e) * p.sx + 2 * (1 - e) * e * cx + e * e * p.tx;
+        const y = (1 - e) * (1 - e) * p.sy + 2 * (1 - e) * e * cy + e * e * p.ty;
+        ctx.globalAlpha = 1 - f * f * 0.4;
+        ctx.fillStyle = p.color;
+        heartPath(ctx, x, y, p.size * (1 - f * 0.35));
+        ctx.fill();
+        continue;
+      }
       p.vy += p.g * dt;
       p.x += p.vx * dt;
       p.y += p.vy * dt;
       p.rot += p.vr * dt;
-      const f = p.life / p.max;
       ctx.globalAlpha = p.kind === 'text' ? Math.min(1, (1 - f) * 2.2) : 1 - f * f;
       switch (p.kind) {
         case 'dot':
@@ -787,6 +1178,12 @@ export class Renderer {
   }
 }
 
+/** '#RRGGBB' + прозрачность → 'rgba(…)'. Нужно для градиентов северного сияния. */
+function hexA(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
+}
+
 function star(ctx, x, y, s, rot = 0) {
   ctx.save();
   ctx.translate(x, y);
@@ -823,7 +1220,7 @@ function wing(ctx, x, y, s, angle, color) {
 }
 
 /** Делает из фото-вырезки «наклейку» с белой обводкой — так Мию хорошо видно на любом фоне. */
-function makeSticker(img, worldW) {
+export function makeSticker(img, worldW) {
   const px = Math.ceil(worldW * 3);
   const ratio = img.naturalHeight / img.naturalWidth;
   const h = Math.ceil(px * ratio);

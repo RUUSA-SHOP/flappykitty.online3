@@ -4,6 +4,7 @@
    Запуск: npm run test:site (входит в npm test). Зависимости не нужны. */
 
 import fs from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -135,6 +136,8 @@ function walk(dir, out = []) {
 
 const jsFiles = walk('assets/js').filter((f) => f.endsWith('.js'));
 for (const file of jsFiles) {
+  const syntax = spawnSync(process.execPath, ['--check', path.join(ROOT, file)], { encoding: 'utf8' });
+  if (syntax.status !== 0) err(file, `ошибка синтаксиса: ${syntax.stderr.trim()}`);
   const src = read(file);
   for (const m of src.matchAll(/(?:import|export)\s[^'"]*?from\s+['"]([^'"]+)['"]|import\s+['"]([^'"]+)['"]/g)) {
     const spec = m[1] || m[2];
