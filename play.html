@@ -12,8 +12,8 @@
   <meta property="og:locale" content="ru_RU">
   <meta property="og:title" content="Flappy Kitty — Мия научилась летать">
   <meta property="og:description" content="Шесть уровней, целое небо сердечек и записка после каждого.">
-  <meta property="og:url" content="https://flappykitty.online/play.html">
-  <meta property="og:image" content="https://flappykitty.online/assets/img/og.jpg">
+  <meta property="og:url" content="https://ruusa-shop.github.io/flappykitty.online3/play.html">
+  <meta property="og:image" content="https://ruusa-shop.github.io/flappykitty.online3/assets/img/og.jpg">
   <meta name="twitter:card" content="summary_large_image">
   <link rel="icon" href="assets/img/icons/favicon-32.png" sizes="32x32" type="image/png">
   <link rel="apple-touch-icon" href="assets/img/icons/apple-touch-icon.png">
@@ -45,6 +45,8 @@
   <symbol id="i-infinity" viewBox="0 0 24 24"><path d="M18.6 6.62c-1.44 0-2.8.56-3.77 1.53L12 10.66 10.48 12h.01L7.8 14.39c-.64.64-1.49.99-2.4.99-1.87 0-3.39-1.51-3.39-3.38S3.53 8.62 5.4 8.62c.91 0 1.76.35 2.44 1.03l1.13 1 1.51-1.34L9.22 8.2C8.2 7.18 6.84 6.62 5.4 6.62 2.42 6.62 0 9.04 0 12s2.42 5.38 5.4 5.38c1.44 0 2.8-.56 3.77-1.53l2.83-2.5.01.01L13.52 12h-.01l2.69-2.39c.64-.64 1.49-.99 2.4-.99 1.87 0 3.39 1.51 3.39 3.38s-1.52 3.38-3.39 3.38c-.9 0-1.76-.35-2.44-1.03l-1.14-1.01-1.51 1.34 1.27 1.12c1.02 1.01 2.37 1.57 3.82 1.57 2.98 0 5.4-2.41 5.4-5.38s-2.42-5.37-5.4-5.37z"/></symbol>
   <symbol id="i-hanger" viewBox="0 0 24 24"><path d="M21.6 18.2L13 11.75v-.91c1.65-.49 2.8-2.17 2.43-4.05-.26-1.31-1.3-2.4-2.61-2.7C10.54 3.57 8.5 5.3 8.5 7.5h2c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5c0 .84-.69 1.52-1.53 1.5-.54-.01-.97.45-.97.99v1.76L2.4 18.2c-.77.58-.36 1.8.6 1.8h18c.96 0 1.37-1.22.6-1.8zM6 18l6-4.5 6 4.5H6z"/></symbol>
   <symbol id="i-grid" viewBox="0 0 24 24"><path d="M4 4h7v7H4zm9 0h7v7h-7zM4 13h7v7H4zm9 0h7v7h-7z"/></symbol>
+  <symbol id="i-camera" viewBox="0 0 24 24"><path d="M9 3L7.17 5H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-3.17L15 3H9zm3 5a5 5 0 1 1 0 10 5 5 0 0 1 0-10zm0 2a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"/></symbol>
+  <symbol id="i-photo" viewBox="0 0 24 24"><path d="M21 19V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></symbol>
   <symbol id="i-check" viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></symbol>
 </svg>
 
@@ -63,6 +65,7 @@
         <svg class="icon" aria-hidden="true"><use href="#i-pause"/></svg>
       </button>
     </div>
+    <div class="hud__combo" id="hudCombo" hidden>×0</div>
     <div class="hud__score" id="hudScore" hidden>0</div>
     <div class="hud__powers" id="hudPowers"></div>
   </div>
@@ -107,6 +110,9 @@
           <svg class="icon" aria-hidden="true"><use href="#i-hanger"/></svg>Гардероб
         </button>
       </div>
+      <button class="btn btn--ghost btn--small" id="btnMemories" type="button" hidden>
+        <svg class="icon" aria-hidden="true"><use href="#i-photo"/></svg>Воспоминания<span class="memories__count">0</span>
+      </button>
       <button class="btn btn--gold btn--small" id="btnEndless" type="button">
         <svg class="icon" aria-hidden="true"><use href="#i-infinity"/></svg><span id="btnEndlessLabel">Бесконечный полёт</span>
       </button>
@@ -185,6 +191,7 @@
       <div class="panel__stack">
         <button class="btn" id="btnWinNext" type="button" hidden>Дальше</button>
         <button class="btn" id="btnNote" type="button"><svg class="icon" aria-hidden="true"><use href="#i-mail"/></svg><span id="btnNoteLabel">Открыть записку</span></button>
+        <button class="btn btn--ghost btn--small" id="btnWinCard" type="button" hidden><svg class="icon" aria-hidden="true"><use href="#i-camera"/></svg>Картинка на память</button>
         <button class="btn btn--ghost btn--small" id="btnWinRetry" type="button"><svg class="icon" aria-hidden="true"><use href="#i-restart"/></svg>Ещё раз на три звезды</button>
       </div>
     </div>
@@ -203,6 +210,60 @@
       <a class="btn btn--ghost btn--small" href="love.html" id="btnAllNotes">Все записки</a>
     </div>
   </section>
+
+  <!-- ===== финальная сцена ===== -->
+  <section class="screen screen--finale" data-name="finale" hidden>
+    <p class="finale__hint" id="finaleSkip">Нажми, чтобы ускорить</p>
+  </section>
+
+  <!-- ===== письмо ===== -->
+  <section class="screen screen--calm" data-name="letter" hidden>
+    <div class="lettercard" id="letterCard">
+      <p class="lettercard__eyebrow">Письмо</p>
+      <h2 class="lettercard__title" id="letterTitle2"></h2>
+      <div class="lettercard__text" id="letterText"></div>
+      <p class="lettercard__sign" id="letterSign2"></p>
+    </div>
+    <div class="panel__stack panel__stack--free" id="letterActions" hidden>
+      <button class="btn" id="btnLetterNext" type="button"><svg class="icon" aria-hidden="true"><use href="#i-photo"/></svg>Воспоминания</button>
+    </div>
+  </section>
+
+  <!-- ===== воспоминания ===== -->
+  <section class="screen screen--calm screen--top" data-name="memories" hidden>
+    <header class="memhead">
+      <h2 class="memhead__title">Воспоминания</h2>
+      <p class="memhead__count" id="memoryCount"></p>
+    </header>
+    <p class="memempty" id="memoryEmpty" hidden>Пока пусто. Снимки открываются за пройденные уровни.</p>
+    <div class="memories" id="memoryList"></div>
+    <p class="memhint" id="memoryHint" hidden>Листай — тут вся Мия</p>
+    <div class="panel__stack panel__stack--free">
+      <button class="btn" id="btnMemoriesNext" type="button">Дальше</button>
+      <button class="btn btn--ghost btn--small" id="btnMemoriesMenu" type="button">В меню</button>
+    </div>
+  </section>
+
+  <!-- ===== титры ===== -->
+  <section class="screen screen--calm" data-name="credits" hidden>
+    <div class="credits">
+      <p class="credits__cat" data-cat>Мия</p>
+      <ul class="credits__list" id="creditsList"></ul>
+      <p class="credits__stars" id="creditsStars" aria-hidden="true"></p>
+      <p class="credits__reward" id="creditsReward"></p>
+    </div>
+    <div class="panel__stack panel__stack--free">
+      <button class="btn" id="btnCreditsLetter" type="button"><svg class="icon" aria-hidden="true"><use href="#i-mail"/></svg>Перечитать письмо</button>
+      <button class="btn btn--ghost btn--small" id="btnPostcard" type="button" hidden><svg class="icon" aria-hidden="true"><use href="#i-camera"/></svg>Картинка на память</button>
+      <button class="btn btn--ghost btn--small" id="btnCreditsMenu" type="button">В меню</button>
+    </div>
+  </section>
+
+  <!-- ===== открытка ===== -->
+  <div class="postcard" id="postcardBox">
+    <a class="postcard__img" id="postcardLink" href="#" download hidden><span class="visually-hidden">Открыть картинку</span></a>
+    <p class="postcard__hint" id="postcardHint" hidden>Нажми на картинку, чтобы сохранить или отправить</p>
+  </div>
 
   <!-- ===== проигрыш ===== -->
   <section class="screen screen--veil" data-name="lose" hidden>

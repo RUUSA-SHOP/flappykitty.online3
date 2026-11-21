@@ -5,6 +5,7 @@ import { save } from '../storage.js';
 import { LEVELS, SKINS, POWERUPS } from './levels.js';
 import { Sim } from './sim.js';
 import { Renderer } from './render.js';
+import { Finale } from './finale.js';
 import { Sound } from './audio.js';
 import { THEMES } from './themes.js';
 
@@ -13,6 +14,7 @@ const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
 const STEP = 1 / 120;
 const params = new URLSearchParams(location.search);
 const DEV = params.has('dev'); // play.html?dev=1 — все уровни открыты (для проверки)
+const FINAL = LEVELS.length;
 
 const stage = $('#stage');
 const canvas = $('#game');
@@ -34,6 +36,7 @@ const LOSE_LINES = [
   'Это была разведка. Теперь всерьёз.',
 ];
 
+
 let sim = null;
 let screen = 'loading';
 let mode = 'story';
@@ -43,9 +46,22 @@ let last = 0;
 let pendingTimer = null;
 let afterNote = null;
 let frozen = false;
+let hitStop = 0; // короткая пауза на ударе: мир замирает, удар чувствуется весом
 let musicStarted = false; // музыка включается с первым полётом и дальше играет везде, кроме паузы
+let finale = null; // финальная сцена после шестого уровня
+let finaleResult = null;
 const images = {};
+const memoryImgs = {};
 const hud = {};
+let saidThisRun = {}; // какие реплики Мия уже сказала в этом полёте
+
+/** Реплика Мии из списка черновиков в config.js. Один раз за событие за полёт. */
+function miaSay(key) {
+  const list = CONFIG.miaLines && CONFIG.miaLines[key];
+  if (!list || !list.length || saidThisRun[key]) return;
+  saidThisRun[key] = true;
+  renderer.say(list[Math.floor(Math.random() * list.length)]);
+}
 
 /* ---------- запуск ---------- */
 
@@ -88,7 +104,11 @@ async function boot() {
   resize();
   attract();
   const jump = parseInt(params.get('level'), 10);
-  if (jump && (DEV || save.isLevelOpen(jump)) && LEVELS[jump - 1]) startLevel(jump);
+  if (params.has('finale') && (DEV || (save.data.levels[FINAL] && save.data.levels[FINAL].done))) {
+    // прямой вход в финал — чтобы можно было проверить письмо без шести уровней
+    levelId = FINAL;
+    startFinale({ stars: 3, hearts: 0, earned: 0 });
+  } else if (jump && (DEV || save.isLevelOpen(jump)) && LEVELS[jump - 1]) startLevel(jump);
   else go('menu');
   last = performance.now();
   requestAnimationFrame(frame);
@@ -97,11 +117,15 @@ async function boot() {
 function fillNames() {
   $$('[data-her-sweet]').forEach((e) => (e.textContent = CONFIG.her.sweet));
   $$('[data-her-dative]').forEach((e) => (e.textContent = CONFIG.her.dative));
+  $$('[data-her]').forEach((e) => (e.textContent = CONFIG.her.name));
   $$('[data-cat]').forEach((e) => (e.textContent = CONFIG.cat.name));
   if (isBirthday()) $('#bday').hidden = false;
 }
 
 /* ---------- экраны ---------- */
+
+/** Экраны, где холст не нужен: там спокойный фон из CSS, чтобы ничто не мешало читать. */
+const CALM_SCREENS = new Set(['letter', 'memories', 'credits']);
 
 function go(name) {
   screen = name;
@@ -117,7 +141,11 @@ function go(name) {
   }
   if (name === 'levels') renderLevels();
   if (name === 'wardrobe') renderSkins();
-  if (musicStarted) {
+  if (name === 'memories') renderMemories();
+  if (CALM_SCREENS.has(name)) {
+    finale = null;
+    sound.stopMusic();
+  } else if (musicStarted) {
     if (name === 'pause') sound.stopMusic();
     else sound.startMusic();
   }
@@ -141,6 +169,11 @@ function refreshMenu() {
   const best = $('#menuBest');
   best.hidden = !d.best;
   best.textContent = `Рекорд: ${d.best}`;
+  // «Воспоминания» появляются, как только открыт хотя бы один снимок
+  const memBtn = $('#btnMemories');
+  const anyMemory = unlockedMemories().length > 0;
+  memBtn.hidden = !anyMemory;
+  if (anyMemory) $('.memories__count', memBtn).textContent = String(unlockedMemories().length);
   syncToggles();
 }
 
@@ -154,8 +187,17 @@ function attract() {
   sim.miaX = renderer.viewW / 2;
   sim.hoverY = 400;
   sim.attract = true;
+  sim.attractT = 0;
   renderer.finishLabel = '';
+  renderer.trail.length = 0;
+  renderer.particles.length = 0;
+  renderer.warm = 0;
+  renderer.cam.zoom = 1;
+  renderer.cam.zoomTo = 1;
+  saidThisRun = {};
   sound.setTheme(sim.theme);
+  sound.setMode('menu');
+  sound.setProgress(0);
 }
 
 function renderLevels() {
@@ -218,7 +260,7 @@ function renderSkins() {
     hint.textContent = s.hint;
     const b = document.createElement('button');
     b.type = 'button';
-    b.className = 'btn btn--small ' + (on ? 'btn--gold' : owned ? 'btn--ghost' : d.hearts >= s.price ? '' : 'btn--ghost');
+    b.className = 'btn btn--small ' + (on ? 'btn--gold' : 'btn--ghost');
     if (on) {
       b.textContent = 'Надето';
       b.disabled = true;
@@ -251,6 +293,58 @@ function renderSkins() {
   }
 }
 
+/* ---------- воспоминания: настоящие снимки из альбома ---------- */
+
+/** Снимки, которые уже открылись: у каждого в config.js указан уровень. */
+function unlockedMemories() {
+  const list = CONFIG.memories || [];
+  const d = save.data;
+  return list.filter((m) => DEV || (d.levels[m.level] && d.levels[m.level].done));
+}
+
+async function memoryImage(id) {
+  if (memoryImgs[id]) return memoryImgs[id];
+  try {
+    memoryImgs[id] = await loadImage(`assets/img/gallery/${id}-thumb.webp`);
+  } catch (e) {
+    memoryImgs[id] = null;
+  }
+  return memoryImgs[id];
+}
+
+function renderMemories(autoPlay = false) {
+  const list = unlockedMemories();
+  const box = $('#memoryList');
+  box.innerHTML = '';
+  $('#memoryEmpty').hidden = list.length > 0;
+  $('#memoryHint').hidden = list.length < 2;
+  $('#btnMemoriesNext').hidden = list.length === 0;
+  list.forEach((m, i) => {
+    const fig = document.createElement('figure');
+    fig.className = 'polaroid';
+    fig.style.setProperty('--i', String(i));
+    if (autoPlay) fig.style.animationDelay = `${0.15 + i * 0.55}s`;
+    const img = document.createElement('img');
+    img.alt = m.caption || '';
+    img.loading = 'lazy';
+    img.width = 640;
+    img.height = 853;
+    img.src = `assets/img/gallery/${m.id}-thumb.webp`;
+    const cap = document.createElement('figcaption');
+    cap.textContent = m.caption || '';
+    fig.append(img, cap);
+    box.appendChild(fig);
+    // подставляем настоящие пропорции, когда картинка загрузится
+    memoryImage(m.id).then((im) => {
+      if (im && im.naturalWidth) {
+        img.width = im.naturalWidth;
+        img.height = im.naturalHeight;
+      }
+    });
+  });
+  $('#memoryCount').textContent = `${list.length} из ${(CONFIG.memories || []).length}`;
+}
+
 /* ---------- старт игры ---------- */
 
 /** Кладёт в кошелёк сердечки, собранные в текущем полёте и ещё не учтённые.
@@ -271,8 +365,16 @@ function startLevel(id) {
   const l = LEVELS[id - 1];
   sim = new Sim({ mode: 'story', levelId: id, viewW: renderer.viewW, seed: (Date.now() % 1e9) + id });
   renderer.particles.length = 0;
+  renderer.trail.length = 0;
+  renderer.momentFx = null;
+  renderer.warm = 0;
+  renderer.cam.zoom = 1;
+  renderer.cam.zoomTo = 1;
   renderer.finishLabel = id === LEVELS.length ? CONFIG.her.name : '';
+  saidThisRun = {};
   sound.setTheme(l.theme);
+  sound.setMode('play');
+  sound.setProgress(0);
   $('#introEyebrow').textContent = `Уровень ${id} из ${LEVELS.length} · ${l.gates} ворот`;
   $('#introName').textContent = levelName(l);
   $('#introStory').textContent = l.story;
@@ -287,8 +389,14 @@ function startEndless() {
   mode = 'endless';
   sim = new Sim({ mode: 'endless', viewW: renderer.viewW, seed: Date.now() % 1e9 });
   renderer.particles.length = 0;
+  renderer.trail.length = 0;
+  renderer.momentFx = null;
+  renderer.warm = 0;
   renderer.finishLabel = '';
+  saidThisRun = {};
   sound.setTheme(sim.theme);
+  sound.setMode('play');
+  sound.setProgress(0);
   resetHud();
   beginPlay();
 }
@@ -320,6 +428,7 @@ function resetHud() {
   $('#hudTrack').hidden = mode !== 'story';
   $('#hudScore').hidden = mode !== 'endless';
   $('#hudPowers').innerHTML = '';
+  $('#hudCombo').hidden = true;
   updateHud();
 }
 
@@ -336,6 +445,17 @@ function updateHud() {
     chip.classList.remove('bump');
     void chip.offsetWidth;
     chip.classList.add('bump');
+  }
+  if (hud.combo !== sim.combo) {
+    hud.combo = sim.combo;
+    const c = $('#hudCombo');
+    if (sim.combo >= 3) {
+      c.hidden = false;
+      c.textContent = `×${sim.combo}`;
+      c.classList.remove('bump');
+      void c.offsetWidth;
+      c.classList.add('bump');
+    } else c.hidden = true;
   }
   if (mode === 'story') {
     const p = Math.round(sim.progress * 100);
@@ -381,21 +501,25 @@ function onEvent(ev) {
   switch (ev.type) {
     case 'start':
       $('#hint').hidden = true;
+      miaSay('start');
       break;
     case 'flap':
       sound.play('flap');
       break;
     case 'heart':
       sound.play('heart');
+      if (ev.combo === 5) miaSay('combo');
       break;
     case 'fish':
       sound.play('fish');
+      miaSay('firstFish');
       break;
     case 'pop':
       sound.play('pop');
       break;
     case 'power':
       sound.play('power');
+      miaSay(ev.kind === 'shield' ? 'firstBubble' : ev.kind);
       break;
     case 'powerEnd':
       sound.play('powerEnd');
@@ -407,6 +531,18 @@ function onEvent(ev) {
     case 'gate':
       sound.play('gate');
       break;
+    case 'nearMiss':
+      sound.play('nearMiss');
+      break;
+    case 'lastGate':
+      sound.play('lastGate');
+      miaSay('lastGate');
+      break;
+    case 'moment':
+      sound.play('moment');
+      if (ev.kind === 'fireworks') sound.play('firework');
+      toast(CONFIG.momentLines?.[ev.kind] || '');
+      break;
     case 'warn':
       sound.play('warn');
       break;
@@ -415,6 +551,8 @@ function onEvent(ev) {
       break;
     case 'hit':
       sound.play('hit');
+      hitStop = renderer.reduceMotion ? 0 : 0.09; // короткая пауза — удар ощущается весом
+      miaSay('hit');
       buzz(ev.lives > 0 ? 60 : [80, 40, 120]);
       break;
     case 'theme':
@@ -423,7 +561,11 @@ function onEvent(ev) {
       break;
     case 'win':
       sound.play('win');
-      pendingTimer = setTimeout(showWin, 1500);
+      if (mode === 'story' && levelId === FINAL) {
+        pendingTimer = setTimeout(() => finishFinalLevel(), 900);
+      } else {
+        pendingTimer = setTimeout(showWin, 1500);
+      }
       break;
     case 'lose':
       sound.play('lose');
@@ -486,6 +628,9 @@ function showWin() {
   btnNext.hidden = hasNote && !seen;
   btnNext.textContent = isFinal ? 'В меню' : `Дальше · уровень ${levelId + 1}`;
   $('#btnWinRetry').hidden = stars >= 3;
+  // открытка — чтобы отправить результат в мессенджер
+  $('#btnWinCard').hidden = false;
+  preparePostcard(stars, earned);
   go('win');
 }
 
@@ -493,7 +638,8 @@ function showNote() {
   const isFinal = levelId === LEVELS.length;
   const note = isFinal ? CONFIG.finalLetter : CONFIG.notes.find((n) => n.level === levelId);
   if (!note) return nextAfterWin();
-  $('#noteNo').textContent = isFinal ? 'Письмо' : `Записка № ${levelId} из ${LEVELS.length - 1}`;
+  if (isFinal) return showLetter();
+  $('#noteNo').textContent = `Записка № ${levelId} из ${LEVELS.length - 1}`;
   $('#noteTitle').textContent = note.title;
   const box = $('#noteText');
   box.innerHTML = '';
@@ -502,8 +648,8 @@ function showNote() {
     p.textContent = par.trim();
     box.appendChild(p);
   });
-  setSignature($('#noteSign'), isFinal ? CONFIG.from : `— ${note.from || CONFIG.cat.name}`);
-  $('#btnNoteNext').textContent = isFinal ? 'В меню' : `Дальше · уровень ${levelId + 1}`;
+  setSignature($('#noteSign'), `— ${note.from || CONFIG.cat.name}`);
+  $('#btnNoteNext').textContent = `Дальше · уровень ${levelId + 1}`;
   save.markNoteSeen(levelId);
   sound.play('paper');
   afterNote = nextAfterWin;
@@ -541,6 +687,154 @@ function showOver() {
   go('over');
 }
 
+/* ---------- финал: сцена, письмо, воспоминания, титры ---------- */
+
+/** Шестой уровень пройден: вместо экрана победы — маленькое кино. */
+function finishFinalLevel() {
+  if (screen !== 'play') return;
+  const stars = sim.stars();
+  const bonus = stars * 5;
+  const earned = sim.hearts + bonus;
+  save.completeLevel(FINAL, stars, sim.pathHearts);
+  bankHearts();
+  save.addHearts(bonus);
+  startFinale({ stars, hearts: sim.hearts, earned, bestCombo: sim.bestCombo, nearMisses: sim.nearMisses });
+}
+
+function startFinale(result) {
+  finaleResult = result;
+  finale = new Finale(renderer.ctx, renderer, {
+    herName: CONFIG.her.name,
+    catName: CONFIG.cat.name,
+    title: (CONFIG.finalLetter && CONFIG.finalLetter.title) || 'Для тебя',
+  });
+  renderer.particles.length = 0;
+  renderer.trail.length = 0;
+  renderer.momentFx = null;
+  renderer.shake = 0;
+  renderer.flash = 0;
+  sound.setMode('finale');
+  sound.setProgress(1);
+  sound.play('finale');
+  $('#finaleSkip').hidden = renderer.reduceMotion;
+  go('finale');
+}
+
+/** Письмо появляется постепенно и читается спокойно: ни одного эффекта поверх текста. */
+function showLetter() {
+  const letter = CONFIG.finalLetter;
+  if (!letter) return go('credits');
+  $('#letterTitle2').textContent = letter.title;
+  const box = $('#letterText');
+  box.innerHTML = '';
+  const pars = letter.text.split(/\n\s*\n/);
+  pars.forEach((par, i) => {
+    const p = document.createElement('p');
+    p.textContent = par.trim();
+    p.style.setProperty('--i', String(i));
+    box.appendChild(p);
+  });
+  // кнопка появляется только после того, как текст дописан
+  const delay = renderer.reduceMotion ? 0 : 500 + pars.length * 900;
+  const actions = $('#letterActions');
+  actions.hidden = true;
+  clearTimeout(showLetter.timer);
+  showLetter.timer = setTimeout(() => {
+    if (screen === 'letter') actions.hidden = false;
+  }, delay);
+  setSignature($('#letterSign2'), CONFIG.from);
+  save.markNoteSeen(FINAL);
+  sound.play('letter');
+  go('letter');
+  $('#letterCard').scrollTop = 0;
+}
+
+function showCredits() {
+  const r = finaleResult || {};
+  const list = $('#creditsList');
+  list.innerHTML = '';
+  const lines = (CONFIG.credits || []).concat([`Для ${CONFIG.her.name} — с любовью`]);
+  lines.forEach((line, i) => {
+    const li = document.createElement('li');
+    li.textContent = line;
+    li.style.setProperty('--i', String(i));
+    list.appendChild(li);
+  });
+  $('#creditsStars').textContent = r.stars ? `★`.repeat(r.stars) : '';
+  $('#creditsReward').textContent = r.earned ? `В кошельке стало на ${r.earned} сердечек больше` : '';
+  $('#btnPostcard').hidden = false;
+  preparePostcard(r.stars || 0, r.earned || 0);
+  go('credits');
+}
+
+/** Собирает картинку-открытку на холсте: без сервера, её можно отправить в мессенджер. */
+function preparePostcard(stars, earned) {
+  const link = $('#postcardLink');
+  const btn = $('#btnPostcard');
+  link.hidden = true;
+  btn.disabled = false;
+  const c = document.createElement('canvas');
+  c.width = 1080;
+  c.height = 1350;
+  const x = c.getContext('2d');
+  const g = x.createLinearGradient(0, 0, 0, 1350);
+  g.addColorStop(0, '#5D4E9E');
+  g.addColorStop(0.45, '#EE86A2');
+  g.addColorStop(1, '#FFE3B8');
+  x.fillStyle = g;
+  x.fillRect(0, 0, 1080, 1350);
+  // сердечки-фон
+  for (let i = 0; i < 40; i++) {
+    x.fillStyle = `rgba(255,255,255,${0.08 + (i % 5) * 0.05})`;
+    heartAt(x, (i * 271) % 1080, (i * 197) % 1350, 12 + (i % 7) * 6);
+  }
+  // Мия
+  if (renderer.sticker) {
+    const st = renderer.sticker;
+    const w = 520;
+    const h = w * st.ratio;
+    x.drawImage(st.canvas, 540 - w / 2, 430 - h / 2, w, h);
+  }
+  // звёзды
+  x.textAlign = 'center';
+  x.fillStyle = '#FFE08A';
+  x.font = '900 96px Nunito, sans-serif';
+  x.fillText('★'.repeat(Math.max(1, stars || 0)), 540, 830);
+  // подписи
+  x.fillStyle = '#FFFFFF';
+  x.font = '400 88px Pacifico, Nunito, cursive';
+  x.fillText('Flappy Kitty', 540, 990);
+  x.font = '800 54px Nunito, sans-serif';
+  const l = LEVELS[levelId - 1];
+  x.fillText(l ? `Уровень ${levelId} · ${levelName(l)}` : 'Мия долетела', 540, 1080);
+  x.font = '400 56px Caveat, Nunito, cursive';
+  x.fillText(`Для ${CONFIG.her.name} · ${new Date().toLocaleDateString('ru-RU')}`, 540, 1180);
+  if (earned) {
+    x.font = '800 44px Nunito, sans-serif';
+    x.fillText(`Сердечек: ${earned}`, 540, 1260);
+  }
+  const url = c.toDataURL('image/png');
+  link.href = url;
+  link.download = `flappy-kitty-${levelId}.png`;
+  // картинку создаём здесь, а не в разметке: адрес появляется только после сборки
+  link.textContent = '';
+  const img = document.createElement('img');
+  img.src = url;
+  img.alt = 'Открытка: Мия, звёзды и дата';
+  link.appendChild(img);
+  link.hidden = true;
+  btn.disabled = false;
+}
+
+function heartAt(x, cx, cy, s) {
+  x.beginPath();
+  x.moveTo(cx, cy + s * 0.9);
+  x.bezierCurveTo(cx - s * 1.5, cy - s * 0.1, cx - s * 0.75, cy - s * 1.15, cx, cy - s * 0.4);
+  x.bezierCurveTo(cx + s * 0.75, cy - s * 1.15, cx + s * 1.5, cy - s * 0.1, cx, cy + s * 0.9);
+  x.closePath();
+  x.fill();
+}
+
 /* ---------- пауза ---------- */
 
 function pause() {
@@ -575,19 +869,54 @@ function flap() {
   sim.flap();
 }
 
+/** Тап по Мии в меню: она отзывается. */
+function petMia(cssX, cssY) {
+  if (!sim || !sim.attract) return false;
+  const p = renderer.toWorld(cssX, cssY);
+  const dx = p.x - sim.miaX;
+  const dy = p.y - sim.mia.y;
+  if (dx * dx + dy * dy > 110 * 110) return false;
+  sim.mia.vy = -260;
+  sim.pulsePet = 1;
+  renderer.pulse = 0.8;
+  renderer.burst(sim.miaX, sim.mia.y, 8, ['#FF5C7A', '#FFB3C6', '#FFFFFF'], 170, 'heart');
+  sound.play(Math.random() < 0.4 ? 'purr' : 'meow');
+  const lines = (CONFIG.miaLines && CONFIG.miaLines.idle) || [];
+  if (lines.length) renderer.say(lines[Math.floor(Math.random() * lines.length)], 1.6);
+  return true;
+}
+
 function bind() {
   window.addEventListener('resize', resize);
   window.addEventListener('orientationchange', () => setTimeout(resize, 200));
+  // iOS прячет и показывает адресную строку — холст должен за этим успевать
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', () => setTimeout(resize, 60));
 
   stage.addEventListener('pointerdown', (e) => {
     sound.unlock();
-    if (screen !== 'play') return;
     if (e.target.closest('button, a')) return;
+    const rect = canvas.getBoundingClientRect();
+    if (screen === 'menu') {
+      petMia(e.clientX - rect.left, e.clientY - rect.top);
+      return;
+    }
+    if (screen === 'finale') {
+      // тап ускоряет сцену, но не обрывает её на середине кадра
+      if (finale) finale.t = Math.max(finale.t, finale.dur[finale.stage] - 0.35);
+      return;
+    }
+    if (screen === 'intro') {
+      // от открытия ссылки до первого взмаха — одно касание
+      sound.play('click');
+      beginPlay();
+      return;
+    }
+    if (screen !== 'play') return;
     e.preventDefault();
     flap();
   });
   // не даём странице прокручиваться и масштабироваться во время игры
-  stage.addEventListener('touchmove', (e) => { if (screen === 'play') e.preventDefault(); }, { passive: false });
+  stage.addEventListener('touchmove', (e) => { if (screen === 'play' || screen === 'finale') e.preventDefault(); }, { passive: false });
   stage.addEventListener('contextmenu', (e) => e.preventDefault());
   // iOS: щипок двумя пальцами не должен увеличивать игру
   document.addEventListener('gesturestart', (e) => e.preventDefault());
@@ -624,7 +953,7 @@ function bind() {
       sound.sleep();
     } else {
       sound.wake();
-      if (musicStarted && screen !== 'pause') sound.startMusic();
+      if (musicStarted && screen !== 'pause' && !CALM_SCREENS.has(screen)) sound.startMusic();
       last = performance.now();
     }
   });
@@ -640,10 +969,15 @@ function bind() {
     sound.play('click');
     const allDone = LEVELS.every((l) => save.data.levels[l.id] && save.data.levels[l.id].done);
     if (allDone) go('levels');
-    else startLevel(save.nextLevel(LEVELS.length));
+    else {
+      startLevel(save.nextLevel(LEVELS.length));
+      beginPlay();
+      flap();
+    }
   });
   $('#btnLevels').addEventListener('click', () => { sound.unlock(); sound.play('click'); go('levels'); });
   $('#btnWardrobe').addEventListener('click', () => { sound.unlock(); sound.play('click'); go('wardrobe'); });
+  $('#btnMemories').addEventListener('click', () => { sound.unlock(); sound.play('click'); renderMemories(true); go('memories'); });
   $('#btnEndless').addEventListener('click', () => {
     sound.unlock();
     if ($('#btnEndless').getAttribute('aria-disabled') === 'true') {
@@ -662,6 +996,20 @@ function bind() {
   $('#btnAgain').addEventListener('click', () => { sound.play('click'); restart(); });
   $('#btnNote').addEventListener('click', showNote);
   $('#btnWinNext').addEventListener('click', () => { sound.play('click'); nextAfterWin(); });
+  $('#btnWinCard').addEventListener('click', () => {
+    sound.play('click');
+    const link = $('#postcardLink');
+    if (!link.href) return;
+    link.hidden = false;
+    $('#postcardHint').hidden = false;
+  });
+  $('#btnPostcard').addEventListener('click', () => {
+    sound.play('click');
+    const link = $('#postcardLink');
+    if (!link.href) return;
+    link.hidden = false;
+    $('#postcardHint').hidden = false;
+  });
   $('#btnMute').addEventListener('click', () => {
     const on = !(save.data.sound || save.data.music);
     save.set({ sound: on, music: on });
@@ -672,6 +1020,11 @@ function bind() {
     sound.play('click');
   });
   $('#btnNoteNext').addEventListener('click', () => { sound.play('click'); (afterNote || nextAfterWin)(); });
+  $('#btnLetterNext').addEventListener('click', () => { sound.play('click'); sound.play('memory'); renderMemories(true); go('memories'); });
+  $('#btnMemoriesNext').addEventListener('click', () => { sound.play('click'); showCredits(); });
+  $('#btnMemoriesMenu').addEventListener('click', () => { sound.play('click'); go('menu'); });
+  $('#btnCreditsLetter').addEventListener('click', () => { sound.play('click'); showLetter(); });
+  $('#btnCreditsMenu').addEventListener('click', () => { sound.play('click'); go('menu'); });
   $('#tglSound').addEventListener('click', () => {
     const on = !save.data.sound;
     save.set({ sound: on });
@@ -690,6 +1043,13 @@ function bind() {
 
 function resize() {
   const w = renderer.resize();
+  // куда летят собранные сердечки: центр счётчика в углу экрана
+  const chip = $('.hud__hearts');
+  if (chip && chip.getBoundingClientRect) {
+    const r = chip.getBoundingClientRect();
+    const c = canvas.getBoundingClientRect();
+    if (r.width) renderer.hudTarget = renderer.toWorld(r.left - c.left + r.width / 2, r.top - c.top + r.height / 2);
+  }
   if (!sim) return;
   if (sim.attract) {
     sim.viewW = w;
@@ -709,23 +1069,51 @@ function frame(now) {
   last = now;
   if (frozen) return;
   if (dt > 0.1) dt = 0.1; // вкладка была в фоне — не «прыгаем»
+
+  // на «спокойных» экранах холст не трогаем: там фон из CSS и ничего не движется
+  if (CALM_SCREENS.has(screen)) return;
+
+  if (screen === 'finale') {
+    if (finale) {
+      if (finale.done) showLetter();
+      else finale.draw(Math.min(dt, 0.05));
+    }
+    return;
+  }
+
   if (!sim) return;
 
   const running = screen !== 'pause';
   if (running) {
-    acc += dt;
-    while (acc >= STEP) {
-      sim.step(STEP);
-      acc -= STEP;
-      if (sim.events.length) {
-        for (const ev of sim.events) {
-          renderer.handle(ev, sim);
-          onEvent(ev);
+    // короткая пауза на ударе: мир замирает на долю секунды
+    if (hitStop > 0) hitStop = Math.max(0, hitStop - dt);
+    else {
+      acc += dt;
+      while (acc >= STEP) {
+        sim.step(STEP);
+        acc -= STEP;
+        if (sim.events.length) {
+          for (const ev of sim.events) {
+            renderer.handle(ev, sim);
+            onEvent(ev);
+          }
+          sim.events.length = 0;
         }
-        sim.events.length = 0;
       }
     }
-    if (screen === 'play') updateHud();
+    if (screen === 'play') {
+      updateHud();
+      sound.setProgress(sim.progress);
+      if (mode === 'story') renderer.warm = Math.max(renderer.warm, Math.max(0, (sim.progress - 0.9) / 0.1) * 0.5);
+    }
+    // Мия в меню живёт своей жизнью: покачивается и время от времени взмахивает
+    if (sim.attract) {
+      sim.attractT = (sim.attractT || 0) + dt;
+      const a = sim.attractT;
+      sim.mia.y = sim.hoverY + Math.sin(a * 1.4) * 34 + Math.sin(a * 3.7) * 8;
+      if (sim.pulsePet) sim.pulsePet = Math.max(0, sim.pulsePet - dt * 2);
+      if (Math.sin(a * 1.4) > 0.985 && renderer.wingT > 0.6) renderer.wingT = 0;
+    }
   }
   renderer.draw(sim, running ? dt : 0);
 }
@@ -734,7 +1122,7 @@ function frame(now) {
 window.__fk = {
   get sim() { return sim; },
   get screen() { return screen; },
-  go, startLevel, startEndless, beginPlay, showWin, showNote, save, renderer,
+  go, startLevel, startEndless, beginPlay, showWin, showNote, showLetter, showCredits, startFinale, save, renderer, sound,
   freeze(v = true) { frozen = v; },
 };
 
